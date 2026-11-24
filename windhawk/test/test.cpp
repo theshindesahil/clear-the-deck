@@ -320,7 +320,7 @@ static void LiveTests(const std::wstring& testsDir) {
     WCHAR tmp[MAX_PATH];
     GetTempPathW(MAX_PATH, tmp);
     g_storage = std::wstring(tmp) + L"gmt-test-" + std::to_wstring(GetCurrentProcessId());
-    std::wstring snap = g_storage + L"\\snapshot.txt";
+    std::wstring snap = SnapshotPath();  // creates the storage folder, per-user file name
 
     auto base = [&]() {
         Settings s;
@@ -478,7 +478,43 @@ static void LiveTests(const std::wstring& testsDir) {
         sn.apps.push_back({L"GmFakeWin", bin + L"\\GmFakeWin.exe", L"", L""});
         WriteSnapshot(sn);
         Check(!SnapshotIsLeftOver(), L"a snapshot from this session is not treated as leftover");
+        sn.logon = CurrentLogonId();
+        WriteSnapshot(sn);
+        Check(!sn.logon.empty() && !SnapshotIsLeftOver(), L"a snapshot from this sign-in is not leftover");
+        sn.logon = L"0000000000000001";  // another sign-in, even though the tick count never reset
+        WriteSnapshot(sn);
+        Check(SnapshotIsLeftOver(), L"a snapshot from an earlier sign-in is leftover (Fast Startup)");
+        Snapshot rt;
+        Check(LoadSnapshot(&rt) == LoadResult::Ok && rt.logon == sn.logon, L"the sign-in id survives the file");
         DeleteSnapshot();
+        Check(SnapshotPath().find(UserSidText()) != std::wstring::npos, L"the snapshot file is named after the user's SID");
+    }
+
+    // --- L5b: unloading while on puts the machine-wide settings back
+    Out(L"-- L5b unload restores the power plan");
+    {
+        std::wstring active = ActivePlan();
+        std::wstring other;
+        for (const auto& p : ListPowerPlans()) {
+            if (p.first != active) { other = p.first; break; }
+        }
+        if (other.empty() || active.empty()) {
+            Out(L"  (only one power plan here, skipped)");
+        } else {
+            Snapshot sn;
+            sn.startedAt = NowFileTime();
+            sn.logon = CurrentLogonId();
+            sn.plan = active;
+            sn.apps.push_back({L"GmFakeWin", bin + L"\\GmFakeWin.exe", L"", L""});
+            WriteSnapshot(sn);
+            SetPlan(other);
+            RestoreOnUnload();
+            Check(ActivePlan() == active, L"the power plan is back after unload");
+            Snapshot after;
+            Check(LoadSnapshot(&after) == LoadResult::Ok && after.plan.empty() && after.apps.size() == 1,
+                  L"the snapshot keeps the apps but no longer the plan");
+            DeleteSnapshot();
+        }
     }
 
     // --- L6: failed relaunch keeps the snapshot for a retry
@@ -786,7 +822,7 @@ static void HideToTrayLive(const std::wstring& testsDir) {
     WCHAR tmp[MAX_PATH];
     GetTempPathW(MAX_PATH, tmp);
     g_storage = std::wstring(tmp) + L"gmt-test-hide-" + std::to_wstring(GetCurrentProcessId());
-    std::wstring snap = g_storage + L"\\snapshot.txt";
+    std::wstring snap = SnapshotPath();
 
     Settings s;
     s.notify = false;

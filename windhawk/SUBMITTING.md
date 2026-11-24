@@ -38,8 +38,11 @@ Things a reviewer is likely to ask about, and the answers:
 
 - *Why a tool mod?* It hooks nothing and injects nowhere; it only needs a hotkey and the Win32 API, which is
   what the "Mods as tools" pattern is for.
-- *Can it lose data?* It sends a normal close request. Nothing is force-closed unless the user lists the app
-  for it, and an app that asks to save simply stays open.
+- *Can it lose data?* It sends a normal close request first, and an app that asks to save simply stays open.
+  An app is ended only when the user lists it for that, or when it has no window (or only hid it to the tray)
+  and the user left it ticked in the checklist, which opens fully expanded.
+- *Why change the power plan?* Optional and off by default. It is restored on Turn Off, on unload, and after
+  a restart (per-sign-in id in the snapshot).
 - *Why are services not handled?* They need administrator rights, which a normal-privilege tool must not have.
 
 ## Tests
