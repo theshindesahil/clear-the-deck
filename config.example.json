@@ -1,0 +1,153 @@
+{
+  "gamePowerPlan": "19799241-b240-4294-9c2c-43be1373d0ed",
+  "pauseApps": [
+    {
+      "name": "Wallpaper Engine",
+      "processes": [
+        "wallpaper64",
+        "wallpaper32",
+        "webwallpaper64",
+        "webwallpaper32"
+      ]
+    },
+    {
+      "name": "Rainmeter",
+      "processes": [
+        "Rainmeter"
+      ],
+      "quitArgs": "!Quit"
+    },
+    {
+      "name": "Flow Launcher",
+      "processes": [
+        "Flow.Launcher"
+      ]
+    },
+    {
+      "name": "UniGetUI",
+      "processes": [
+        "UniGetUI"
+      ]
+    },
+    {
+      "name": "Phone Link",
+      "processes": [
+        "PhoneExperienceHost",
+        "YourPhone"
+      ],
+      "aumid": "Microsoft.YourPhone_8wekyb3d8bbwe!App"
+    },
+    {
+      "name": "FluidVoice",
+      "processes": [
+        "fluidvoice"
+      ]
+    },
+    {
+      "name": "PowerToys",
+      "processes": [
+        "PowerToys",
+        "PowerToys.*"
+      ]
+    },
+    {
+      "name": "Everything",
+      "processes": [
+        "Everything"
+      ],
+      "skipCmd": "-svc"
+    },
+    {
+      "name": "Ollama",
+      "processes": [
+        "ollama app",
+        "ollama"
+      ],
+      "hidden": true
+    },
+    {
+      "name": "Zen Browser",
+      "processes": [
+        "zen"
+      ],
+      "forceKill": false,
+      "closeTimeoutSec": 20,
+      "relaunchArgs": ""
+    },
+    {
+      "name": "WhatsApp",
+      "processes": [
+        "WhatsApp",
+        "WhatsApp.*"
+      ],
+      "aumid": "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App",
+      "forceKill": false
+    },
+    {
+      "name": "ShareX",
+      "processes": [
+        "ShareX"
+      ]
+    },
+    {
+      "name": "Claude",
+      "processes": [
+        "claude"
+      ],
+      "pathLike": "*\\WindowsApps\\Claude_*",
+      "aumid": "Claude_pzs8sxrjxfjjc!Claude"
+    }
+  ],
+  "gameFolders": [
+    "D:\\Games",
+    "C:\\Program Files\\Epic Games",
+    "D:\\SteamLibrary\\steamapps\\common",
+    "C:\\Program Files (x86)\\Steam\\steamapps\\common"
+  ],
+  "excludePathParts": [
+    "wallpaper_engine",
+    "\\Launcher\\",
+    "DirectXRedist",
+    "GameInputRedist",
+    "Steam Controller Configs",
+    "\\Epic Games\\Launcher"
+  ],
+  "closeOthers": true,
+  "othersTimeoutSec": 10,
+  "keepNames": [
+    "explorer",
+    "msedgewebview2",
+    "Windhawk",
+    "PredatorSense",
+    "OpenRGB",
+    "steam",
+    "steamwebhelper",
+    "EpicGamesLauncher",
+    "EpicWebHelper",
+    "Discord",
+    "obs64",
+    "KillerControlCenter*",
+    "ProtonVPN*",
+    "WindowsTerminal",
+    "OpenConsole",
+    "Warp",
+    "git-credential-manager"
+  ],
+  "keepPaths": [
+    "*\\NVIDIA Corporation\\*",
+    "*\\WindowsApps\\MicrosoftWindows.*",
+    "*\\WindowsApps\\Microsoft.WidgetsPlatformRuntime_*",
+    "*\\WindowsApps\\Microsoft.DesktopAppInstaller_*",
+    "*\\WindowsApps\\ULICTekInc.PredatorSense*",
+    "*\\WindowsApps\\RivetNetworks.Killer*"
+  ],
+  "launchers": [
+    "steam",
+    "EpicGamesLauncher",
+    "EADesktop",
+    "upc",
+    "Battle.net",
+    "GalaxyClient",
+    "XboxPcApp"
+  ]
+}

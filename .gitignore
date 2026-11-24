@@ -1,0 +1,14 @@
+# personal and runtime files
+config.json
+state.json
+state.*.json
+state.json.tmp
+gamemode.log
+backup-*/
+
+# test scratch
+tests/bin/
+tests/Games/
+tests/out/
+tests/work*/
+tests/fake-services*.ps1
