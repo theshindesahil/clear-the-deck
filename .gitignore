@@ -12,3 +12,7 @@ tests/Games/
 tests/out/
 tests/work*/
 tests/fake-services*.ps1
+
+# windhawk mod test build
+windhawk/test/out/
+windhawk/screenshots/
