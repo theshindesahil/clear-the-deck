@@ -26,12 +26,12 @@ hotkey is pressed.
 2. Add the file as `mods/game-mode-toggle.wh.cpp` (the file name must equal the `@id`).
 3. Open a pull request. Windhawk's automation checks the metadata, the readme and that it compiles; a
    maintainer reviews it.
-4. Screenshots are optional. Two of the confirmation dialog are in `screenshots\` (`confirm-on.png` and
-   `confirm-off.png`, made with sample app names). The readme can only show images by URL, so upload them
-   with the pull request or to the repo and link them in the readme, for example
-   `![Turning on](https://raw.githubusercontent.com/<you>/<repo>/main/confirm-on.png)`. The folder is
-   git-ignored and meant to be deleted once they are uploaded. To recreate them:
-   `powershell -File test\capture-dialog.ps1 -Exe test\out\shot32.exe -OutDir screenshots`
+4. Screenshots are optional. The window is one morphing window (checklist, progress, summary), so a few frames
+   tell the story. The readme can only show images by URL, so upload them with the pull request or to the repo
+   and link them in the readme, for example `![Turning on](https://raw.githubusercontent.com/<you>/<repo>/main/turn-on.png)`.
+   To capture the checklist with real app icons: `test\out\test.exe iconshot <file.bmp>` (set `GMT_THEME`,
+   `GMT_FONT` and `GMT_SCALE` to try a theme, font or size). To capture every stage on fake apps:
+   `test\out\test.exe demo <tests dir> <folder>`.
 5. Every later change needs a higher `@version`.
 
 Things a reviewer is likely to ask about, and the answers:
@@ -52,6 +52,6 @@ really runs as a 32-bit process on 64-bit Windows. Build and run the tests for b
 `clang++ -target i686-w64-mingw32` and `-target x86_64-w64-mingw32`, with the flags from
 `C:\ProgramData\Windhawk\EditorWorkspace\compile_flags.txt` plus `-DWH_EDITING -municode -static`.
 
-`test\test.cpp` builds with Windhawk's own compiler (see its header comment) and has three modes:
+`test\test.cpp` builds with Windhawk's own compiler (see its header comment) and has these modes:
 `unit` (pure logic), `probe` (read-only look at the PC) and `live <tests dir>` (turn on and off against the fake
 apps built by `..\tests\build-fakes.ps1`; it refuses to run if a real app could be reached).

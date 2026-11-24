@@ -23,6 +23,7 @@ static size_t TestStoragePath(PWSTR buf, size_t n) {
     return g_storage.size();
 }
 
+static std::wstring TestFont();
 static int g_pass = 0;
 static int g_fail = 0;
 
@@ -184,9 +185,8 @@ static void ProbeTests() {
     s.keepFolders = {L"\\NVIDIA Corporation\\", L"\\NVIDIA\\", L"\\AMD\\", L"\\Intel\\", L".IntelGraphicsExperience",L"\\Realtek", L"\\Windhawk\\", L"\\WindowsApps\\MicrosoftWindows.", L"\\WindowsApps\\Microsoft.Widgets", L"\\WindowsApps\\Microsoft.DesktopAppInstaller", L"\\EdgeWebView\\"};
     s.keepVendorApps = true;
     s.keepVendors = {L"Acer", L"ULIC", L"Predator", L"Nitro", L"Lenovo", L"Legion", L"Hewlett-Packard", L"HP Inc", L"OMEN", L"Dell", L"Alienware", L"ASUS", L"ROG", L"Armoury", L"Micro-Star", L"MSI", L"Gigabyte", L"Razer", L"Logitech", L"Corsair", L"SteelSeries", L"Intel", L"NVIDIA", L"AMD", L"Advanced Micro Devices", L"Realtek", L"Qualcomm", L"Rivet Networks", L"Killer"};
-    std::vector<std::wstring> kept;
     ULONGLONG t0 = GetTickCount64();
-    auto groups = CollectGroups(s, &kept);
+    auto groups = CollectGroups(s);
     Out(L"  collecting took " + std::to_wstring(GetTickCount64() - t0) + L" ms");
     bool claudeListed = false, windhawkListed = false, hasBackground = false, consoleListed = false, steamHelperListed = false;
     for (const auto& g : groups) {
@@ -197,9 +197,6 @@ static void ProbeTests() {
         windhawkListed = windhawkListed || Lower(g.path).find(L"\\windhawk\\") != std::wstring::npos || ExeKey(g.exe) == L"vscodium";
         hasBackground = hasBackground || g.background;
         consoleListed = consoleListed || !IsGuiExe(g.path);
-    }
-    for (const auto& k2 : kept) {
-        Out(L"    keep  " + k2);
     }
     Check(!claudeListed, L"Claude is not in the list (kept, as asked for tests)");
     Check(!windhawkListed, L"Windhawk and its editor (VSCodium) are not in the list");
@@ -212,7 +209,7 @@ static void ProbeTests() {
     Check(!acerListed, L"Acer tools (PC maker utilities) are not in the list");
     s.keepVendorApps = false;
     bool acerBack = false;
-    for (const auto& g : CollectGroups(s, nullptr)) {
+    for (const auto& g : CollectGroups(s)) {
         acerBack = acerBack || VendorMatches(FileVersionString(g.path, L"CompanyName") + L" | " + g.path, {L"Acer"});
     }
     Check(acerBack, L"with the setting off the Acer tools are listed again");
@@ -540,11 +537,11 @@ static void LiveTests(const std::wstring& testsDir) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Dialog tests: a helper thread drives the real dialog window like a user would.
+// Window tests: a helper thread drives the real window with keys, like a user would.
 
 static HWND WaitForDialog() {
     for (int i = 0; i < 100; i++) {
-        HWND h = FindWindowW(kDlgClass, nullptr);
+        HWND h = FindWindowW(L"GameModeToggleFlow", nullptr);
         if (h && IsWindowVisible(h)) {
             return h;
         }
@@ -557,32 +554,32 @@ typedef void (*DialogScript)(HWND);
 static DWORD WINAPI AutomatorThread(LPVOID p) {
     HWND h = WaitForDialog();
     if (h) {
-        Sleep(300);
+        Sleep(900);   // the opening animation
         ((DialogScript)p)(h);
     }
     return 0;
 }
 
+static void Key(HWND h, WPARAM vk) {
+    PostMessageW(h, WM_KEYDOWN, vk, 0);
+    Sleep(140);
+}
+
+// The old checklist had buttons to click; the new window is driven by keys. OK = Enter, Cancel = Esc.
+static void Click(HWND h, int id) {
+    Key(h, id == IDCANCEL ? VK_ESCAPE : VK_RETURN);
+}
+
 static ChecklistResult RunDialog(const ChecklistSpec& spec, DialogScript script) {
     HANDLE t = CreateThread(nullptr, 0, AutomatorThread, (LPVOID)script, 0, nullptr);
-    ChecklistResult r = ShowChecklist(spec);
+    ChecklistResult r = flow::Review(spec);
     WaitForSingleObject(t, 5000);
     CloseHandle(t);
+    flow::Close();   // an OK leaves the window open in its progress view
     return r;
 }
 
-static std::wstring TextOf(HWND h) {
-    WCHAR b[300] = {};
-    GetWindowTextW(h, b, 300);
-    return b;
-}
-
-static void Click(HWND dlg, int id) {
-    SendMessageW(GetDlgItem(dlg, id), BM_CLICK, 0, 0);
-    Sleep(80);
-}
-
-static ChecklistSpec SampleSpec(size_t n, bool expanded) {
+static ChecklistSpec SampleSpec(size_t n) {
     static const wchar_t* const names[] = {L"Discord Canary", L"Google Chrome", L"Notion", L"OneNote", L"Rainmeter", L"Spotify", L"Wallpaper Engine", L"Samsung Notes"};
     static const wchar_t* const notes[] = {L"", L"", L"", L"", L"background", L"", L"background", L"ends process"};
     ChecklistSpec s = OnChecklist({}, true, false, L"Ultimate Performance", 1);
@@ -593,153 +590,157 @@ static ChecklistSpec SampleSpec(size_t n, bool expanded) {
             s.items.push_back({L"Sample app number " + std::to_wstring(i + 1), L""});
         }
     }
-    s.startExpanded = expanded;
     return s;
 }
 
 static void DialogTests() {
-    Out(L"== checklist dialog, driven like a user");
+    Out(L"== the Game Mode window, driven like a user");
     g_settings.confirm = true;
+    g_settings.fontName = TestFont();
+    g_settings.theme = L"oled-purple";
 
-    static ChecklistResult seen;
-    static bool visBefore, visAfter, summaryOk, tristateOk, allOnOk, allOffOk;
-    static std::wstring firstLabel, longLabel;
-    static bool defaultOk;
-
-    // 1) expand, untick one, select all, clear all, pick two, OK
-    auto script1 = [](HWND h) {
-        visBefore = IsWindowVisible(GetDlgItem(h, kIdItem0));
-        // Focus belongs to the dialog's thread, not ours, and arrives a moment after the window shows.
-        defaultOk = WaitFor([h] {
-            GUITHREADINFO gti = {sizeof(gti)};
-            GetGUIThreadInfo(GetWindowThreadProcessId(h, nullptr), &gti);
-            return gti.hwndFocus == GetDlgItem(h, IDOK);
-        }, 3000);
-        Click(h, kIdAdv);
-        visAfter = IsWindowVisible(GetDlgItem(h, kIdItem0));
-        firstLabel = TextOf(GetDlgItem(h, kIdItem0));
-        HWND item2 = GetDlgItem(h, kIdItem0 + 2);
-        std::wstring beforeClick = TextOf(g_dlg->summaryWnd);
-        LRESULT stateBefore = SendMessageW(item2, BM_GETCHECK, 0, 0);
-        Click(h, kIdItem0 + 2);
-        summaryOk = TextOf(g_dlg->summaryWnd) == L"Closes 7 of 8 apps";
-        if (!summaryOk) {
-            Out(L"  DEBUG summary before=[" + beforeClick + L"] after=[" + TextOf(g_dlg->summaryWnd) + L"] item2 state before=" + std::to_wstring((long long)stateBefore) +
-                L" after=" + std::to_wstring((long long)SendMessageW(item2, BM_GETCHECK, 0, 0)) + L" visible=" + std::to_wstring(IsWindowVisible(item2)) +
-                L" enabled=" + std::to_wstring(IsWindowEnabled(item2)) + L" expanded=" + std::to_wstring(g_dlg->expanded));
-        }
-        tristateOk = SendMessageW(GetDlgItem(h, kIdAll), BM_GETCHECK, 0, 0) == BST_INDETERMINATE;
-        Click(h, kIdAll);
-        allOnOk = TextOf(g_dlg->summaryWnd) == L"Closes 8 of 8 apps";
-        Click(h, kIdAll);
-        allOffOk = TextOf(g_dlg->summaryWnd) == L"Closes 0 of 8 apps";
-        Click(h, kIdItem0 + 0);
-        Click(h, kIdItem0 + 4);
-        Click(h, IDOK);
-    };
-    seen = RunDialog(SampleSpec(8, false), script1);
-    Check(seen.ok, L"OK returns ok");
-    Check(defaultOk, L"focus starts on the default button (Enter confirms)");
-    Check(!visBefore && visAfter, L"the list is hidden until Advanced options is opened");
-    Check(firstLabel == L"Discord Canary", L"an app is shown by its name");
-    Check(summaryOk, L"unticking one app updates the summary line");
-    Check(tristateOk, L"Select all shows a partial state");
-    Check(allOnOk && allOffOk, L"Select all ticks and clears every app");
-    bool pick = seen.checked.size() == 8;
-    for (size_t i = 0; pick && i < 8; i++) {
-        pick = seen.checked[i] == (i == 0 || i == 4);
-    }
-    Check(pick, L"the result lists exactly the two apps that were ticked");
-
-    // 2) Esc cancels
-    auto escScript = [](HWND h) { PostMessageW(h, WM_KEYDOWN, VK_ESCAPE, 0); };
-    Check(!RunDialog(SampleSpec(5, false), escScript).ok, L"Esc cancels");
-
-    // 3) Enter confirms with everything ticked
-    auto enterScript = [](HWND h) { PostMessageW(h, WM_KEYDOWN, VK_RETURN, 0); };
-    ChecklistResult e = RunDialog(SampleSpec(5, false), enterScript);
+    // 1) Enter confirms with everything ticked
+    auto enterScript = [](HWND h) { Key(h, VK_RETURN); };
+    ChecklistResult e = RunDialog(SampleSpec(5), enterScript);
     Check(e.ok && std::count(e.checked.begin(), e.checked.end(), true) == 5, L"Enter confirms with everything ticked");
 
-    // 4) the window's close button cancels
+    // 2) Esc cancels
+    auto escScript = [](HWND h) { Key(h, VK_ESCAPE); };
+    Check(!RunDialog(SampleSpec(5), escScript).ok, L"Esc cancels");
+
+    // 3) Tab to the first app, Space unticks it, Enter confirms
+    auto untickScript = [](HWND h) { Key(h, VK_TAB); Key(h, VK_SPACE); Key(h, VK_RETURN); };
+    ChecklistResult u = RunDialog(SampleSpec(4), untickScript);
+    Check(u.ok && u.checked.size() == 4 && !u.checked[0] && u.checked[1] && u.checked[2] && u.checked[3], L"Tab and Space untick an app, Enter confirms the rest");
+
+    // 4) everything unticked: Enter still confirms (the power plan and priorities still apply), and nothing is ticked
+    auto noneScript = [](HWND h) {
+        Key(h, VK_TAB);   // first app
+        Key(h, VK_SPACE);
+        Key(h, VK_TAB);
+        Key(h, VK_SPACE);
+        Key(h, VK_RETURN);
+    };
+    ChecklistResult none = RunDialog(SampleSpec(2), noneScript);
+    Check(none.ok && none.checked.size() == 2 && !none.checked[0] && !none.checked[1], L"with every app unticked Enter still confirms, and no app is picked");
+
+    // 5) the close request cancels
     auto closeScript = [](HWND h) { PostMessageW(h, WM_CLOSE, 0, 0); };
-    Check(!RunDialog(SampleSpec(5, false), closeScript).ok, L"the close button cancels");
+    Check(!RunDialog(SampleSpec(3), closeScript).ok, L"closing the window cancels");
 
-    // 5) Cancel button
-    auto cancelScript = [](HWND h) { Click(h, IDCANCEL); };
-    Check(!RunDialog(SampleSpec(5, false), cancelScript).ok, L"the Cancel button cancels");
-
-    // 6) Mod stopped while the dialog is open: the dialog closes without confirming and the stop is passed on
+    // 6) the mod is stopped while the window is open: it closes without confirming and the stop is passed on
     static DWORD dialogThread;
     dialogThread = GetCurrentThreadId();
-    auto stopScript2 = [](HWND) { PostThreadMessageW(dialogThread, WM_APP_STOP, 0, 0); };
-    ChecklistResult stopped = RunDialog(SampleSpec(3, false), stopScript2);
+    auto stopScript = [](HWND) { PostThreadMessageW(dialogThread, WM_APP_STOP, 0, 0); };
+    ChecklistResult stopped = RunDialog(SampleSpec(3), stopScript);
     MSG msg;
     bool repost = PeekMessageW(&msg, nullptr, WM_APP_STOP, WM_APP_STOP, PM_REMOVE);
-    Check(!stopped.ok && repost, L"stopping the mod closes the dialog without confirming and keeps the stop request");
+    Check(!stopped.ok && repost, L"stopping the mod closes the window without confirming and keeps the stop request");
 
-    // 7) empty list
-    static bool emptyOk;
-    auto emptyScript = [](HWND h) {
-        emptyOk = TextOf(g_dlg->summaryWnd) == L"Closes nothing" && !IsWindowVisible(GetDlgItem(h, kIdAdv));
-        Click(h, IDOK);
+    // 7) an empty list can still be confirmed (a run that only changes the power plan)
+    ChecklistResult empty = RunDialog(SampleSpec(0), enterScript);
+    Check(empty.ok && empty.checked.empty(), L"with no apps the main button still confirms");
+
+    // 8) centred on the monitor, and the size follows the scale setting
+    static bool centred, sizeOk;
+    static int cdx, cdy;
+    auto layoutScript = [](HWND h) {
+        RECT r;
+        GetWindowRect(h, &r);
+        MONITORINFO mi = {sizeof(mi)};
+        GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi);
+        cdx = (r.left + r.right) / 2 - (mi.rcWork.left + mi.rcWork.right) / 2;
+        cdy = (r.top + r.bottom) / 2 - (mi.rcWork.top + mi.rcWork.bottom) / 2;
+        centred = std::abs(cdx) <= 2 && std::abs(cdy) <= 2;
+        sizeOk = (r.right - r.left) == (int)std::lround((flow::W + 2 * flow::M) * 2.0f);
+        Key(h, VK_ESCAPE);
     };
-    ChecklistResult empty = RunDialog(SampleSpec(0, false), emptyScript);
-    Check(empty.ok && emptyOk, L"with nothing to close the summary says so and there is no list");
+    g_settings.uiScale = 2.0f;
+    RunDialog(SampleSpec(5), layoutScript);
+    g_settings.uiScale = 0;
+    Check(centred, L"the window opens in the middle of the screen (off by " + std::to_wstring(cdx) + L", " + std::to_wstring(cdy) + L" px)");
+    Check(sizeOk, L"a window size of 200% makes the window exactly twice as wide");
 
-    // 8) many apps: three columns, the window fits the screen, long names end in an ellipsis
-    static bool fits, threeCols, ellipsis;
+    // 9) 60 apps: the window stays on the screen and the list scrolls
+    static bool fits;
     auto manyScript = [](HWND h) {
-        RECT w, a;
+        RECT w;
         GetWindowRect(h, &w);
         MONITORINFO mi = {sizeof(mi)};
         GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi);
-        a = mi.rcWork;
-        fits = w.left >= a.left && w.top >= a.top && w.right <= a.right && w.bottom <= a.bottom;
-        RECT r0, r1, r2;
-        GetWindowRect(GetDlgItem(h, kIdItem0 + 0), &r0);
-        GetWindowRect(GetDlgItem(h, kIdItem0 + 1), &r1);
-        GetWindowRect(GetDlgItem(h, kIdItem0 + 2), &r2);
-        threeCols = r0.top == r1.top && r1.top == r2.top;
-        ellipsis = TextOf(GetDlgItem(h, kIdItem0 + 30)).back() == L'…';
-        Click(h, IDOK);
-    };
-    ChecklistSpec many = SampleSpec(40, true);
-    many.items[30].text = L"A very long application name that can never fit in one column of the list";
-    ChecklistResult manyRes = RunDialog(many, manyScript);
-    Check(manyRes.ok && manyRes.checked.size() == 40, L"40 apps work");
-    Check(fits, L"the window stays inside the screen with 40 apps");
-    Check(threeCols, L"many apps use three columns");
-    Check(ellipsis, L"a name that does not fit ends with an ellipsis");
-
-    // 9) long names: a plain note is dropped before the name is cut; a warning note stays
-    static std::wstring plainShown, warnShown;
-    auto noteScript = [](HWND h) {
-        plainShown = TextOf(GetDlgItem(h, kIdItem0 + 0));
-        warnShown = TextOf(GetDlgItem(h, kIdItem0 + 1));
-        Click(h, IDOK);
-    };
-    ChecklistSpec notes = SampleSpec(2, true);
-    notes.items[0] = {L"Rainmeter desktop customization tool", L"background", false};
-    notes.items[1] = {L"Samsung Find Client With A Very Long Product Name Indeed", L"ends process", true};
-    RunDialog(notes, noteScript);
-    Check(plainShown.find(L"(background)") == std::wstring::npos && plainShown.find(L"Rainmeter") == 0, L"a plain note is dropped before a name is cut");
-    Check(warnShown.find(L"(ends process)") != std::wstring::npos && warnShown.find(L"…") != std::wstring::npos, L"a warning note stays and the name is cut instead");
-}
-
-// Shows the real dialog with made-up app names, for screenshots. Nothing is closed.
-static void ShowSampleDialog(bool on, bool expanded) {
-    g_settings.confirm = true;
-    ChecklistSpec spec = SampleSpec(8, expanded);
-    if (!on) {
-        std::vector<ChecklistItem> items;
-        for (const auto& it : spec.items) {
-            items.push_back({it.text, L""});
+        fits = w.top >= mi.rcWork.top && w.bottom <= mi.rcWork.bottom;
+        for (int i = 0; i < 40; i++) {
+            Key(h, VK_DOWN);   // moving the focus down scrolls the list
         }
-        spec = OffChecklist(items, true);
-        spec.startExpanded = expanded;
+        Key(h, VK_RETURN);
+    };
+    ChecklistResult many = RunDialog(SampleSpec(60), manyScript);
+    Check(many.ok && many.checked.size() == 60, L"60 apps work");
+    Check(fits, L"the window stays inside the screen with 60 apps");
+
+    // 10) every theme and a missing font open and close without trouble
+    static int themesOpened;
+    static const wchar_t* const themes[] = {L"auto", L"oled-purple", L"oled-white", L"oled-lime", L"oled-blue", L"midnight", L"graphite-lime",
+                                            L"violet-night", L"ember", L"mint", L"paper-light"};
+    auto themeScript = [](HWND h) { themesOpened++; Key(h, VK_ESCAPE); };
+    for (const wchar_t* t : themes) {
+        g_settings.theme = t;
+        RunDialog(SampleSpec(3), themeScript);
     }
-    ChecklistResult r = ShowChecklist(spec);
-    Out(r.ok ? L"dialog: OK" : L"dialog: Cancel");
+    g_settings.theme = L"oled-purple";
+    g_settings.fontName = L"A Font That Does Not Exist";
+    RunDialog(SampleSpec(3), themeScript);
+    g_settings.fontName = TestFont();
+    Check(themesOpened == 12, L"all 11 themes and a missing font open and close (" + std::to_wstring(themesOpened) + L" of 12)");
+
+    // 10b) icons: a real program gets its own icon, a program that is gone falls back to a drawn tile
+    static bool realIcon, missingFallback;
+    auto iconScript = [](HWND h) {
+        realIcon = flow::g_items.size() == 2 && flow::g_items[0].icon && flow::g_items[0].icon->GetWidth() >= 28;
+        missingFallback = flow::g_items.size() == 2 && !flow::g_items[1].icon;
+        Key(h, VK_ESCAPE);
+    };
+    ChecklistSpec withIcons = SampleSpec(0);
+    withIcons.items.push_back({L"Notepad", L"", false, L"C:\\Windows\\System32\\notepad.exe"});
+    withIcons.items.push_back({L"Uninstalled app", L"", false, L"C:\\Nowhere\\Gone.exe"});
+    RunDialog(withIcons, iconScript);
+    Check(realIcon, L"a real program shows its own high-resolution icon");
+    Check(missingFallback, L"a program that is gone falls back to a drawn tile with its initial");
+
+    // 10c) the window keeps drawing while the worker thread is blocked (power plan, closing apps, reopening apps)
+    {
+        HANDLE t = CreateThread(nullptr, 0, AutomatorThread, (LPVOID) + [](HWND h) { Key(h, VK_RETURN); }, 0, nullptr);
+        ChecklistResult r = flow::Review(SampleSpec(6));
+        WaitForSingleObject(t, 5000);
+        CloseHandle(t);
+        LONG before = flow::g_frames, us0 = flow::g_renderUs;
+        Sleep(700);   // the worker does nothing but block, like a slow system call would
+        LONG drawn = flow::g_frames - before;
+        LONG us = flow::g_renderUs - us0;
+        Check(r.ok && drawn >= 25, L"the window keeps drawing while the worker is blocked (" + std::to_wstring(drawn) + L" frames in 0.7 s, " +
+                                       std::to_wstring(drawn ? us / drawn / 10 / 100.0 : 0.0).substr(0, 5) + L" ms to draw one)");
+        flow::Close();
+    }
+
+    // 11) the whole flow: review -> progress -> summary, driven through the same calls the mod uses
+    {
+        HANDLE t = CreateThread(nullptr, 0, AutomatorThread, (LPVOID) + [](HWND h) { Key(h, VK_RETURN); }, 0, nullptr);
+        ChecklistResult r = flow::Review(SampleSpec(3));
+        WaitForSingleObject(t, 5000);
+        CloseHandle(t);
+        bool running = r.ok && flow::Alive() && flow::g_phase == flow::Phase::Running;
+        flow::SetState(0, 1);
+        flow::SetState(1, 2);
+        flow::SetState(2, 1);
+        flow::Sleep_(600);
+        flow::Finish(L"Game Mode is on", L"Closed 2 of 3 apps.");
+        flow::Sleep_(1200);
+        bool done = flow::Alive() && flow::g_phase == flow::Phase::Done;
+        Check(running, L"after OK the window carries on in its progress view");
+        Check(done, L"after the work the window shows the summary");
+        flow::Close();
+        Check(!flow::Alive(), L"closing the summary closes the window");
+    }
 }
 
 static void ToggleWith(DialogScript script) {
@@ -795,9 +796,9 @@ static void WindowlessLive(const std::wstring& testsDir) {
 
     start();
     auto untickThenOk = [](HWND h) {
-        Click(h, kIdAdv);
-        Click(h, kIdItem0 + 0);
-        Click(h, IDOK);
+        Key(h, VK_TAB);     // the first app
+        Key(h, VK_SPACE);   // untick it
+        Key(h, VK_RETURN);
     };
     ToggleWith(untickThenOk);
     Check(Running(L"GmFakeNoWin"), L"unticked in the checklist, the window-less app is left alone");
@@ -844,7 +845,7 @@ static void HideToTrayLive(const std::wstring& testsDir) {
     g_settings = s;
     Out(L"  before: " + FakesRunning());
     {
-        auto groups = CollectGroups(s, nullptr);
+        auto groups = CollectGroups(s);
         for (const auto& g : groups) {
             Out(L"  group " + g.name + L": " + std::to_wstring(g.pids.size()) + L" proc, " + std::to_wstring(g.windows.size()) + L" win, windowless=" + std::to_wstring(g.windowless));
         }
@@ -864,9 +865,8 @@ static void HideToTrayLive(const std::wstring& testsDir) {
     Check(saved.find(L"GmFakeHide") != std::wstring::npos, L"and it is in the snapshot, so turning off can put it back");
     static std::wstring offItem;
     auto offScript = [](HWND h) {
-        Click(h, kIdAdv);
-        offItem = TextOf(GetDlgItem(h, kIdItem0 + 0));
-        Click(h, IDOK);
+        offItem = flow::g_items.empty() ? L"" : flow::g_items[0].name;
+        Key(h, VK_RETURN);
     };
     ToggleWith(offScript);
     WaitFor([] { return Running(L"GmFakeHide"); });
@@ -876,9 +876,9 @@ static void HideToTrayLive(const std::wstring& testsDir) {
     // unticked: left alone
     start();
     auto untickThenOk = [](HWND h) {
-        Click(h, kIdAdv);
-        Click(h, kIdItem0 + 0);
-        Click(h, IDOK);
+        Key(h, VK_TAB);     // the first app
+        Key(h, VK_SPACE);   // untick it
+        Key(h, VK_RETURN);
     };
     ToggleWith(untickThenOk);
     Check(Running(L"GmFakeHide"), L"unticked in the checklist, it is left alone");
@@ -953,10 +953,418 @@ static void TrayAppLive(const std::wstring& testsDir) {
     RemoveDirectoryW(g_storage.c_str());
 }
 
+// ---- demo: the whole workflow on fake apps, with a frame of every state ----
+
+// GMT_FONT / GMT_THEME / GMT_SCALE pick the font, theme and window size for the demo.
+static std::wstring TestFont() {
+    WCHAR b[64] = {};
+    GetEnvironmentVariableW(L"GMT_FONT", b, 64);
+    return b;
+}
+static std::wstring TestTheme() {
+    WCHAR b[64] = {};
+    GetEnvironmentVariableW(L"GMT_THEME", b, 64);
+    return b[0] ? b : L"oled-purple";
+}
+static float TestScale() {
+    WCHAR b[16] = {};
+    GetEnvironmentVariableW(L"GMT_SCALE", b, 16);
+    return (float)_wtof(b);
+}
+
+static std::wstring g_demoOut;
+static volatile bool g_demoStop = false;
+
+// Copies what is on screen over the inside of the window (without the transparent shadow margin).
+static void SnapScreen(HWND h, const std::wstring& path) {
+    RECT r;
+    GetWindowRect(h, &r);
+    int inset = (int)std::lround((flow::M + 1) * flow::g_scale);
+    r.left += inset; r.top += inset; r.right -= inset; r.bottom -= inset;
+    int w = r.right - r.left, hh = r.bottom - r.top;
+    if (w <= 0 || hh <= 0 || !IsWindow(h)) {
+        return;
+    }
+    HDC sd = GetDC(nullptr);
+    HDC md = CreateCompatibleDC(sd);
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = hh;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    void* bits = nullptr;
+    HBITMAP bmp = CreateDIBSection(sd, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HGDIOBJ old = SelectObject(md, bmp);
+    BitBlt(md, 0, 0, w, hh, sd, r.left, r.top, SRCCOPY | CAPTUREBLT);
+    SelectObject(md, old);
+    BITMAPFILEHEADER fh = {};
+    fh.bfType = 0x4D42;
+    fh.bfOffBits = sizeof(fh) + sizeof(BITMAPINFOHEADER);
+    fh.bfSize = fh.bfOffBits + (DWORD)((size_t)w * hh * 4);
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f != INVALID_HANDLE_VALUE) {
+        DWORD n;
+        WriteFile(f, &fh, sizeof(fh), &n, nullptr);
+        WriteFile(f, &bi.bmiHeader, sizeof(BITMAPINFOHEADER), &n, nullptr);
+        WriteFile(f, bits, (DWORD)((size_t)w * hh * 4), &n, nullptr);
+        CloseHandle(f);
+    }
+    DeleteObject(bmp);
+    DeleteDC(md);
+    ReleaseDC(nullptr, sd);
+}
+
+// Watches the window, takes a frame of every new state, and presses Enter on the checklist like a user.
+static DWORD WINAPI DemoSnapper(LPVOID) {
+    int n = 0;
+    flow::Phase lastPhase = flow::Phase::Closed;
+    float lastSnap = -1000;
+    while (!g_demoStop) {
+        HWND h = FindWindowW(L"GameModeToggleFlow", nullptr);
+        if (h && IsWindowVisible(h)) {
+            flow::Phase ph = flow::g_phase;
+            float now = flow::NowMs();
+            if (ph == flow::Phase::Review && lastPhase != ph) {
+                Sleep(1100);
+                WCHAR num[16];
+                wsprintfW(num, L"%02d", ++n);
+                SnapScreen(h, g_demoOut + L"\\demo-" + num + L"-review.bmp");
+                PostMessageW(h, WM_KEYDOWN, VK_RETURN, 0);
+                Sleep(300);
+            } else if (ph != flow::Phase::Review && now - lastSnap > 700) {
+                WCHAR num[16];
+                wsprintfW(num, L"%02d", ++n);
+                SnapScreen(h, g_demoOut + L"\\demo-" + num + (ph == flow::Phase::Done ? L"-done.bmp" : L"-running.bmp"));
+                lastSnap = now;
+            }
+            lastPhase = ph;
+        }
+        Sleep(100);
+    }
+    return 0;
+}
+
+static void DemoWorkflow(const std::wstring& testsDir, const std::wstring& outDir) {
+    std::wstring bin = testsDir + L"\\bin";
+    std::wstring games = testsDir + L"\\Games";
+    g_demoOut = outDir;
+    CreateDirectoryW(outDir.c_str(), nullptr);
+    WCHAR wd[MAX_PATH];
+    GetWindowsDirectoryW(wd, MAX_PATH);
+    g_windowsDir = wd;
+    WCHAR tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    g_storage = std::wstring(tmp) + L"gmt-test-demo-" + std::to_wstring(GetCurrentProcessId());
+    Settings s;
+    s.confirm = true;
+    s.notify = false;
+    s.showProgress = true;
+    s.closeOthers = false;  // only the fake apps below
+    s.plan = L"none";
+    s.timeoutSec = 6;
+    s.closeApps = {L"GmFakeWin", L"GmFakeTray", L"GmFakeSlow", L"GmFakeArgs", L"GmFakeDeaf"};
+    s.gameFolders = {games};
+    s.fontName = TestFont();
+    s.theme = TestTheme();
+    s.uiScale = TestScale();
+    g_settings = s;
+    KillFakes();
+    Launch(bin + L"\\GmFakeWin.exe", L"");
+    Launch(bin + L"\\GmFakeTray.exe", L"--tray");
+    Launch(bin + L"\\GmFakeDeaf.exe", L"--deaf");
+    Launch(bin + L"\\GmFakeArgs.exe", L"--profile \"My Profile\" -x");
+    Launch(bin + L"\\GmFakeSlow.exe", L"--slow 3");
+    Launch(games + L"\\GmFakeGame.exe", L"");
+    Sleep(2500);
+    Out(L"before: " + FakesRunning());
+    HANDLE t = CreateThread(nullptr, 0, DemoSnapper, nullptr, 0, nullptr);
+    Toggle();  // turn on: checklist, progress, summary
+    Out(L"after on: " + FakesRunning());
+    flow::Sleep_(4000);  // the summary stays on screen
+    Toggle();  // turn off: checklist, progress, summary
+    Out(L"after off: " + FakesRunning());
+    flow::Sleep_(4000);
+    g_demoStop = true;
+    WaitForSingleObject(t, 3000);
+    CloseHandle(t);
+    flow::Close();
+    KillFakes();
+    RemoveDirectoryW(g_storage.c_str());
+}
+
+// Real, generic Windows apps with their own icons, for screenshots.
+static ChecklistSpec ShotSpec() {
+    ChecklistSpec spec = OnChecklist({}, true, false, L"Ultimate Performance", 1);
+    spec.items.push_back({L"Notepad", L"", false, L"C:\\Windows\\System32\\notepad.exe"});
+    spec.items.push_back({L"Windows Explorer", L"", false, L"C:\\Windows\\explorer.exe"});
+    spec.items.push_back({L"Calculator", L"", false, L"", L"Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"});
+    spec.items.push_back({L"Task Manager", L"background", false, L"C:\\Windows\\System32\\Taskmgr.exe"});
+    spec.items.push_back({L"Phone Link", L"", false, L"", L"Microsoft.YourPhone_8wekyb3d8bbwe!App"});
+    spec.items.push_back({L"Paint", L"", false, L"C:\\Windows\\System32\\mspaint.exe", L"Microsoft.Paint_8wekyb3d8bbwe!App"});
+    return spec;
+}
+
+static void ShotSettings() {
+    g_settings.confirm = true;
+    g_settings.fontName = TestFont();
+    g_settings.theme = TestTheme();
+    g_settings.uiScale = TestScale();
+}
+
+static DWORD WINAPI IconShotThread(LPVOID) {
+    HWND h = WaitForDialog();
+    if (h) {
+        Sleep(1600);
+        SnapScreen(h, g_demoOut);
+        PostMessageW(h, WM_KEYDOWN, VK_ESCAPE, 0);
+    }
+    return 0;
+}
+
+// The checklist in one theme (GMT_THEME), for the gallery.
+static void IconShot(const std::wstring& out) {
+    g_demoOut = out;
+    ShotSettings();
+    HANDLE t = CreateThread(nullptr, 0, IconShotThread, nullptr, 0, nullptr);
+    flow::Review(ShotSpec());
+    WaitForSingleObject(t, 6000);
+    CloseHandle(t);
+    flow::Close();
+}
+
+static DWORD WINAPI FlowShotThread(LPVOID) {
+    HWND h = WaitForDialog();
+    if (h) {
+        Sleep(1600);
+        SnapScreen(h, g_demoOut + L"\\flow-1-review.bmp");
+        PostMessageW(h, WM_KEYDOWN, VK_RETURN, 0);
+    }
+    return 0;
+}
+
+// The three stages of one run: the checklist, apps closing, the summary.
+static void FlowShot(const std::wstring& outDir) {
+    CreateDirectoryW(outDir.c_str(), nullptr);
+    g_demoOut = outDir;
+    ShotSettings();
+    HANDLE t = CreateThread(nullptr, 0, FlowShotThread, nullptr, 0, nullptr);
+    ChecklistResult r = flow::Review(ShotSpec());
+    WaitForSingleObject(t, 6000);
+    CloseHandle(t);
+    if (!r.ok) {
+        return;
+    }
+    Sleep(500);
+    flow::SetState(0, 1);
+    Sleep(420);
+    flow::SetState(1, 1);
+    Sleep(420);
+    flow::SetState(2, 1);
+    Sleep(600);
+    HWND h = FindWindowW(L"GameModeToggleFlow", nullptr);
+    SnapScreen(h, outDir + L"\\flow-2-running.bmp");
+    flow::SetState(3, 1);
+    flow::SetState(4, 2);   // one app stays open: the amber warning
+    flow::SetState(5, 1);
+    Sleep(500);
+    flow::Finish(L"Game Mode is on", L"Closed 5 of 6 apps. Still running: Phone Link. Power plan set.");
+    Sleep(3200);
+    SnapScreen(h, outDir + L"\\flow-3-done.bmp");
+    flow::Close();
+}
+
+// The window of a running GmFake app, or null.
+static HWND FakeWindow(const wchar_t* name) {
+    for (const auto& w : ListTopLevelWindows()) {
+        if (!IsWindowVisible(w.hwnd) && !IsIconic(w.hwnd)) {
+            continue;
+        }
+        for (const auto& p : ListProcesses()) {
+            if (p.pid == w.pid && ExeKey(p.exe) == Lower(name)) {
+                return w.hwnd;
+            }
+        }
+    }
+    return nullptr;
+}
+
+static void BackgroundReopenLive(const std::wstring& testsDir) {
+    Out(L"-- L10 reopening in the background");
+    std::wstring bin = testsDir + L"\\bin";
+    if (GetFileAttributesW((bin + L"\\GmFakeWin.exe").c_str()) == INVALID_FILE_ATTRIBUTES) {
+        Out(L"  fake apps are not built; run tests\\build-fakes.ps1 first");
+        g_fail++;
+        return;
+    }
+    WCHAR wd[MAX_PATH];
+    GetWindowsDirectoryW(wd, MAX_PATH);
+    g_windowsDir = wd;
+    WCHAR tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    g_storage = std::wstring(tmp) + L"gmt-test-bg-" + std::to_wstring(GetCurrentProcessId());
+    Snapshot sn;
+    sn.startedAt = NowFileTime();
+    sn.apps.push_back({L"GmFakeWin", bin + L"\\GmFakeWin.exe", L"", L""});
+    for (int pass = 0; pass < 2; pass++) {
+        const bool background = pass == 0;
+        reopen::Stop();
+        KillFakes();
+        Settings s;
+        s.confirm = false;
+        s.notify = false;
+        s.showProgress = false;
+        s.closeOthers = false;
+        s.reopenBackground = background;
+        g_settings = s;
+        WriteSnapshot(sn);
+        Toggle();   // a snapshot exists, so this is the turn-off: the fake app is reopened
+        HWND w = nullptr;
+        WaitFor([&] { w = FakeWindow(L"GmFakeWin"); return w != nullptr; }, 8000);
+        Sleep(1500);   // the watcher gets its moment
+        bool iconic = w && IsIconic(w);
+        bool hadFocus = GetForegroundWindow() == w;
+        if (background) {
+            Check(w && iconic && !hadFocus, L"reopened in the background: the window is minimized and does not take the focus");
+        } else {
+            Check(w && !iconic, L"with the option off the app opens normally");
+        }
+    }
+    // an app that ignores the request to start minimized: started plainly, only the hook can catch its window
+    {
+        KillFakes();
+        reopen::Begin();
+        reopen::Expect(bin + L"\\GmFakeWin.exe", L"");
+        std::wstring cmd = L"\"" + bin + L"\\GmFakeWin.exe\"";
+        STARTUPINFOW si = {sizeof(si)};   // no show-window flags: the app opens normally
+        PROCESS_INFORMATION pi = {};
+        if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, bin.c_str(), &si, &pi)) {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        }
+        HWND w = nullptr;
+        WaitFor([&] { w = FakeWindow(L"GmFakeWin"); return w != nullptr; }, 8000);
+        Sleep(1500);
+        Check(w && IsIconic(w), L"an app that ignores the request to start minimized is minimized by the hook as its window appears");
+    }
+    reopen::Stop();
+    KillFakes();
+    RemoveDirectoryW(g_storage.c_str());
+}
+
+// The real host (windhawk.exe) declares common controls 6 and per-monitor v2 DPI
+// awareness in its manifest, and the mod relies on that. Do the same here.
+static void EmulateHostManifest() {
+    using SetCtx_t = BOOL(WINAPI*)(HANDLE);
+    auto setCtx = (SetCtx_t)GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext");
+    if (setCtx) {
+        setCtx((HANDLE)-4);
+    }
+    static const char kManifest[] =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">"
+        "<dependency><dependentAssembly><assemblyIdentity type=\"win32\" "
+        "name=\"Microsoft.Windows.Common-Controls\" version=\"6.0.0.0\" "
+        "processorArchitecture=\"*\" publicKeyToken=\"6595b64144ccf1df\" "
+        "language=\"*\"/></dependentAssembly></dependency></assembly>";
+    WCHAR tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring path = std::wstring(tmp) + L"gmt-test-host.manifest";
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    DWORD wrote = 0;
+    WriteFile(f, kManifest, (DWORD)sizeof(kManifest) - 1, &wrote, nullptr);
+    CloseHandle(f);
+    ACTCTXW ac = {sizeof(ac)};
+    ac.lpSource = path.c_str();
+    HANDLE h = CreateActCtxW(&ac);
+    ULONG_PTR cookie = 0;
+    if (h != INVALID_HANDLE_VALUE) {
+        ActivateActCtx(h, &cookie);  // stays active for the life of the test
+    }
+}
+
 int wmain(int argc, wchar_t** argv) {
+    EmulateHostManifest();
     std::wstring mode = argc > 1 ? argv[1] : L"unit";
-    if (mode == L"dialog-on" || mode == L"dialog-on-open" || mode == L"dialog-off" || mode == L"dialog-off-open") {
-        ShowSampleDialog(mode.rfind(L"dialog-on", 0) == 0, mode.size() > 4 && mode.substr(mode.size() - 5) == L"-open");
+    if (mode == L"flowshot" && argc > 2) {
+        FlowShot(argv[2]);
+        return 0;
+    }
+    if (mode == L"uninitparts") {   // where does the shutdown time go?
+        WCHAR wd[MAX_PATH];
+        GetWindowsDirectoryW(wd, MAX_PATH);
+        g_windowsDir = wd;
+        ChecklistSpec spec = OnChecklist({}, false, true, L"", 0);
+        spec.items.push_back({L"Notepad", L"", false, L"C:\Windows\System32\notepad.exe"});
+        g_settings.showProgress = true;
+        flow::Direct(spec);
+        Sleep(500);
+        flow::Finish(L"Game Mode is on", L"Closed 1 app.");
+        Sleep(400);
+        DWORD tReq = GetTickCount();
+        ULONGLONG t0 = GetTickCount64();
+        flow::RequestClose();
+        while (flow::g_wnd && GetTickCount64() - t0 < 3000) {
+            Sleep(1);
+        }
+        Out(L"window gone after " + std::to_wstring(GetTickCount64() - t0) + L" ms");
+        flow::Close();
+        ULONGLONG t1 = GetTickCount64();
+        flow::Shutdown();
+        ULONGLONG t2 = GetTickCount64();
+        GdiplusOff();
+        ULONGLONG t3 = GetTickCount64();
+        Out(L"flow::Close " + std::to_wstring(t1 - t0) + L" ms, rest of flow::Shutdown " + std::to_wstring(t2 - t1) + L" ms, GdiplusOff " + std::to_wstring(t3 - t2) + L" ms");
+        return 0;
+    }
+    if (mode == L"uninit") {   // how long does the tool process take to shut down?
+        WCHAR wd[MAX_PATH];
+        GetWindowsDirectoryW(wd, MAX_PATH);
+        g_windowsDir = wd;
+        WCHAR tmp[MAX_PATH];
+        GetTempPathW(MAX_PATH, tmp);
+        g_storage = std::wstring(tmp) + L"gmt-test-uninit-" + std::to_wstring(GetCurrentProcessId());
+        WCHAR only[8] = {};
+        const bool single = GetEnvironmentVariableW(L"GMT_ROUND", only, 8) > 0;   // one round per process, like the real tool process
+        for (int round = 0; round < 3; round++) {
+            if (single && _wtoi(only) != round) {
+                continue;
+            }
+            WhTool_ModInit();
+            Sleep(600);
+            if (round >= 1) {   // a summary window is still open, with the window thread running
+                ChecklistSpec spec = OnChecklist({}, false, true, L"", 0);
+                spec.items.push_back({L"Notepad", L"", false, L"C:\Windows\System32\notepad.exe"});
+                flow::Direct(spec);
+                Sleep(500);
+                flow::Finish(L"Game Mode is on", L"Closed 1 app.");
+                Sleep(round == 2 ? 2500 : 300);
+            }
+            ULONGLONG t0 = GetTickCount64();
+            WhTool_ModUninit();
+            Out(L"round " + std::to_wstring(round) + (round ? L" (window open)" : L" (idle)") + L": shut down in " + std::to_wstring(GetTickCount64() - t0) + L" ms");
+        }
+        return 0;
+    }
+    if (mode == L"liveb" && argc > 2) {   // only the background-reopen test
+        BackgroundReopenLive(argv[2]);
+        Out(L"passed " + std::to_wstring(g_pass) + L", failed " + std::to_wstring(g_fail));
+        return g_fail ? 1 : 0;
+    }
+    if (mode == L"livew" && argc > 2) {   // only the window-less app tests
+        WindowlessLive(argv[2]);
+        Out(L"passed " + std::to_wstring(g_pass) + L", failed " + std::to_wstring(g_fail));
+        return g_fail ? 1 : 0;
+    }
+    if (mode == L"iconshot" && argc > 2) {
+        IconShot(argv[2]);
+        return 0;
+    }
+    if (mode == L"demo" && argc > 3) {
+        DemoWorkflow(argv[2], argv[3]);
         return 0;
     }
     if (mode == L"dialog") {
@@ -974,6 +1382,7 @@ int wmain(int argc, wchar_t** argv) {
         WindowlessLive(argv[2]);
         HideToTrayLive(argv[2]);
         TrayAppLive(argv[2]);
+        BackgroundReopenLive(argv[2]);
     } else {
         Out(L"usage: test.exe unit | probe | live <tests dir>");
         return 2;
